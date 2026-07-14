@@ -38,6 +38,47 @@
   var whisperModel = '';
   var lastAnalysis = null; /* { sel, ranges:[{start,end,rt,ri,enabled,kind,label}], wave:{t0,t1,items} } */
   var cachedSel = null;
+  var currentStage = 'select';
+  var hoverRange = -1; /* waveform range index under the cursor */
+  var activeWhisperJob = null;
+
+  function cancelledTranscriptionError() {
+    var err = new Error('Transcription cancelled.');
+    err.cancelled = true;
+    return err;
+  }
+
+  function showTranscriptionCancel(job) {
+    activeWhisperJob = job;
+    if (!els.cancelBtn) return;
+    els.cancelBtn.hidden = false;
+    els.cancelBtn.disabled = false;
+    els.cancelBtn.textContent = 'Cancel transcription';
+  }
+
+  function hideTranscriptionCancel(job) {
+    if (job && activeWhisperJob !== job) return;
+    activeWhisperJob = null;
+    if (!els.cancelBtn) return;
+    els.cancelBtn.hidden = true;
+    els.cancelBtn.disabled = false;
+  }
+
+  function cancelTranscription() {
+    var job = activeWhisperJob;
+    if (!job || job.cancelled) return;
+    job.cancelled = true;
+    if (els.cancelBtn) {
+      els.cancelBtn.disabled = true;
+      els.cancelBtn.textContent = 'Cancelling…';
+    }
+    if (job.child) job.child.kill();
+  }
+
+  /* Dev preview outside Premiere: open index.html?mock=1 in a browser to see
+     the full analyze → review → apply flow with synthetic data. */
+  var MOCK = false;
+  try { MOCK = window.location.search.indexOf('mock=1') !== -1; } catch (e) {}
 
   var MODEL_URL = 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin';
   function defaultModelPath() {
@@ -65,6 +106,8 @@
     ffmpegPath: '',
     fillersOn: false,
     fillerWords: 'um, uh, uhm, erm, hmm, mhm',
+    profanityOn: false,
+    profanityWords: 'fuck, fucking, shit, bitch, asshole, damn',
     whisperPath: '',
     whisperModelPath: ''
   };
@@ -95,7 +138,32 @@
     els.log.className = 'log' + (kind ? ' ' + kind : '');
   }
 
+  /* Inline callout under the analyze button — errors and states the user must
+     act on live here instead of only in the footer log. */
+  var noticeTag = '';
+  function showNotice(text, kind, opts) {
+    opts = opts || {};
+    noticeTag = opts.tag || '';
+    els.noticeText.textContent = text;
+    els.notice.className = 'notice' + (kind ? ' ' + kind : '');
+    els.notice.hidden = false;
+    if (opts.actionLabel && opts.onAction) {
+      els.noticeBtn.textContent = opts.actionLabel;
+      els.noticeBtn.hidden = false;
+      els.noticeBtn.onclick = opts.onAction;
+    } else {
+      els.noticeBtn.hidden = true;
+      els.noticeBtn.onclick = null;
+    }
+  }
+  function hideNotice(tag) {
+    if (tag && noticeTag !== tag) return;
+    noticeTag = '';
+    els.notice.hidden = true;
+  }
+
   function setWorkflow(stage) {
+    currentStage = stage;
     var steps = {
       select: els.workflowSelect,
       review: els.workflowReview,
@@ -114,6 +182,43 @@
       if (els.workflowTitle) els.workflowTitle.textContent = copy[stage][0];
       if (els.workflowHint) els.workflowHint.textContent = copy[stage][1];
     }
+  }
+
+  /* Results describe the settings they were computed with; flag them the
+     moment a detection setting drifts so the user knows to re-analyze. */
+  function markDetectionChanged() {
+    if (!lastAnalysis || !els.staleBar) return;
+    els.staleBar.hidden = false;
+  }
+
+  /* Keep the workflow bar in sync with the timeline selection so the panel
+     reacts before the user commits to an analysis. Called on focus/mouseover,
+     throttled — every call round-trips into ExtendScript. */
+  var selHintBusy = false;
+  var selHintLast = 0;
+  function refreshSelectionHint() {
+    if (MOCK || currentStage !== 'select' || !window.__adobe_cep__) return;
+    var now = Date.now();
+    if (selHintBusy || now - selHintLast < 1500) return;
+    selHintBusy = true;
+    selHintLast = now;
+    callHost('SC_getSelection')
+      .then(function (sel) {
+        selHintBusy = false;
+        if (currentStage !== 'select') return;
+        cachedSel = sel;
+        var items = sel.audio.length ? sel.audio : sel.video;
+        var dur = 0;
+        for (var i = 0; i < items.length; i++) dur += items[i].end - items[i].start;
+        els.workflowTitle.textContent = 'Ready to analyze';
+        els.workflowHint.textContent = items.length + ' clip' + (items.length === 1 ? '' : 's') +
+          ' selected · ' + fmtTime(dur);
+      })
+      .catch(function () {
+        selHintBusy = false;
+        if (currentStage !== 'select') return;
+        els.workflowHint.textContent = 'Select talking clips in the timeline.';
+      });
   }
 
   /* ---------------- CEP bridge ---------------- */
@@ -213,12 +318,22 @@
       els.ffmpegStatus.textContent = 'Found: ' + ffmpegPath;
       els.ffmpegStatus.className = 'hint ok';
       if (!els.ffmpegPath.value) els.ffmpegPath.value = ffmpegPath;
+      hideNotice('ffmpeg');
     } else if (!cp) {
       els.ffmpegStatus.textContent = 'Node.js is disabled in this panel — reinstall the extension.';
       els.ffmpegStatus.className = 'hint bad';
     } else {
       els.ffmpegStatus.textContent = 'ffmpeg not found. Install it (brew install ffmpeg) or paste its path above.';
       els.ffmpegStatus.className = 'hint bad';
+      showNotice('ffmpeg wasn’t found — silence detection needs it.', 'warn', {
+        tag: 'ffmpeg',
+        actionLabel: 'Open Engine setup',
+        onAction: function () {
+          els.engineDetails.open = true;
+          els.engineDetails.scrollIntoView({ block: 'nearest' });
+          els.ffmpegPath.focus();
+        }
+      });
     }
   }
 
@@ -368,6 +483,7 @@
       els.thr.value = thr;
       els.thrVal.textContent = thr + ' dB';
       saveSettings();
+      markDetectionChanged();
       log('Noise level set to ' + thr + ' dB (clip mean ' + mean.toFixed(1) + ' dB).', 'ok');
     });
   }
@@ -393,23 +509,46 @@
     });
   }
 
-  /* Returns [{t0, t1, text}] — one word per entry, times in seconds from the
-     clip's in-point. The prompt biases Whisper toward verbatim output so it
-     doesn't clean the fillers away. */
-  function runWhisper(item) {
+  /* Returns [{t0, t1, text}] — times in seconds from the clip's in-point.
+     mode 'words': one word per entry, prompt-biased toward verbatim output so
+     Whisper doesn't clean the fillers away.
+     mode 'captions': caption-length segments with punctuation. */
+  function runWhisper(item, mode, onProgress) {
     var tmpBase = pathMod.join(os.tmpdir(), 'sc_' + Date.now() + '_' + Math.floor(Math.random() * 1e6));
     var wavPath = tmpBase + '.wav';
     return extractWav(item, wavPath).then(function () {
       return new Promise(function (resolve, reject) {
-        var args = [
-          '-m', whisperModel, '-f', wavPath, '-of', tmpBase,
-          '-oj', '-ml', '1', '-sow', '-l', 'auto', '-t', '4', '-np',
-          '--prompt', 'Umm, uh, er, ah, hmm, mhm, you know, I mean, like, so...'
-        ];
-        cp.execFile(whisperBin, args, { maxBuffer: 64 * 1024 * 1024 }, function (err, so, se) {
+        var args = ['-m', whisperModel, '-f', wavPath, '-of', tmpBase,
+          '-oj', '-sow', '-l', 'auto', '-t', '4', '-np', '-pp'];
+        if (mode === 'captions') {
+          args = args.concat(['-ml', '42']);
+        } else {
+          args = args.concat(['-ml', '1',
+            '--prompt', 'Umm, uh, er, ah, hmm, mhm, you know, I mean, like, so...']);
+        }
+
+        /* execFile buffers stderr until Whisper exits, so its -pp progress
+           output never reaches the panel. Stream it instead. */
+        var output = '';
+        var progressTail = '';
+        var lastProgress = -1;
+        var settled = false;
+        var job = null;
+        function appendOutput(chunk) {
+          output = (output + String(chunk || '')).slice(-64 * 1024);
+        }
+        function finish(err) {
+          if (settled) return;
+          settled = true;
+          if (job && job.cancelled) err = cancelledTranscriptionError();
+          hideTranscriptionCancel(job);
           try { fs.unlinkSync(wavPath); } catch (e) {}
           if (err) {
-            reject(new Error('Whisper failed: ' + String(se || so || err.message).slice(-300)));
+            if (err.cancelled) {
+              reject(err);
+              return;
+            }
+            reject(new Error('Whisper failed: ' + String(output || err.message).slice(-300)));
             return;
           }
           var words = [];
@@ -430,6 +569,33 @@
           }
           try { fs.unlinkSync(tmpBase + '.json'); } catch (e3) {}
           resolve(words);
+        }
+        var child;
+        try {
+          child = cp.spawn(whisperBin, args);
+        } catch (e4) {
+          finish(e4);
+          return;
+        }
+        job = { child: child, cancelled: false };
+        showTranscriptionCancel(job);
+        child.stdout.on('data', appendOutput);
+        child.stderr.on('data', function (chunk) {
+          var text = String(chunk || '');
+          appendOutput(text);
+          progressTail = (progressTail + text).slice(-2048);
+          var matches = progressTail.match(/progress\s*=\s*(\d{1,3})%/gi) || [];
+          for (var i = 0; i < matches.length; i++) {
+            var m = /(\d{1,3})%/.exec(matches[i]);
+            var progress = m ? Math.max(0, Math.min(100, parseInt(m[1], 10))) : -1;
+            if (progress !== lastProgress && onProgress) onProgress(progress);
+            lastProgress = progress;
+          }
+          progressTail = progressTail.slice(-80);
+        });
+        child.on('error', finish);
+        child.on('close', function (code) {
+          finish(code === 0 ? null : new Error('Whisper exited with code ' + code + '.'));
         });
       });
     });
@@ -441,9 +607,9 @@
       .replace(/\s+/g, '');
   }
 
-  function fillerSet() {
+  function wordSet(listStr) {
     var out = {};
-    var parts = String(settings.fillerWords || '').split(',');
+    var parts = String(listStr || '').split(',');
     for (var i = 0; i < parts.length; i++) {
       var w = normalizeWord(parts[i]);
       if (w) out[w] = true;
@@ -451,9 +617,10 @@
     return out;
   }
 
-  function buildFillerRanges(words, item, frameSec, sel) {
-    var set = fillerSet();
-    var pad = 0.04; /* whisper timestamps are ±50ms-ish; cut the whole word */
+  /* Turn matching transcript words into review ranges.
+     kind 'filler' → removed with the silences; 'profanity' → muted in place. */
+  function buildWordRanges(words, item, frameSec, sel, set, kind) {
+    var pad = 0.04; /* whisper timestamps are ±50ms-ish; cover the whole word */
     var srcDur = item.outPoint - item.inPoint;
     var out = [];
     for (var i = 0; i < words.length; i++) {
@@ -473,25 +640,143 @@
       var e = Math.min(item.end, item.start + b);
       if (e <= s) continue;
       var target = rippleTargetFor((s + e) / 2, item, sel);
-      out.push({ start: s, end: e, rt: target.rt, ri: target.ri, enabled: true, kind: 'filler', label: nw });
+      out.push({ start: s, end: e, rt: target.rt, ri: target.ri, enabled: true, kind: kind, label: nw });
     }
     return out;
   }
 
-  /* Fillers already inside a silence cut would be double-counted — drop them. */
-  function dedupeFillers(fillers, silences) {
+  /* Word ranges already inside another cut would be double-counted — drop them. */
+  function dedupeAgainst(ranges, base) {
     var out = [];
-    for (var i = 0; i < fillers.length; i++) {
-      var f = fillers[i];
+    for (var i = 0; i < ranges.length; i++) {
+      var f = ranges[i];
       var overlapped = false;
-      for (var j = 0; j < silences.length; j++) {
-        var s = silences[j];
+      for (var j = 0; j < base.length; j++) {
+        var s = base[j];
         var ov = Math.min(f.end, s.end) - Math.max(f.start, s.start);
         if (ov > (f.end - f.start) * 0.5) { overlapped = true; break; }
       }
       if (!overlapped) out.push(f);
     }
     return out;
+  }
+
+  /* ---------------- captions (SRT export) ---------------- */
+
+  function fmtSrtTime(sec) {
+    sec = Math.max(0, sec);
+    var h = Math.floor(sec / 3600);
+    var m = Math.floor((sec - h * 3600) / 60);
+    var s = Math.floor(sec % 60);
+    var ms = Math.round((sec - Math.floor(sec)) * 1000);
+    if (ms === 1000) { ms = 0; s++; }
+    function p2(n) { return (n < 10 ? '0' : '') + n; }
+    function p3(n) { return (n < 100 ? (n < 10 ? '00' : '0') : '') + n; }
+    return p2(h) + ':' + p2(m) + ':' + p2(s) + ',' + p3(ms);
+  }
+
+  function buildSrt(cues) {
+    cues.sort(function (a, b) { return a.t0 - b.t0; });
+    var out = [];
+    var n = 0;
+    for (var i = 0; i < cues.length; i++) {
+      var text = String(cues[i].text || '').replace(/^\s+|\s+$/g, '');
+      if (!text || !(cues[i].t1 > cues[i].t0)) continue;
+      n++;
+      out.push(String(n));
+      out.push(fmtSrtTime(cues[i].t0) + ' --> ' + fmtSrtTime(cues[i].t1));
+      out.push(text);
+      out.push('');
+    }
+    return out.join('\n');
+  }
+
+  /* Native save dialog when CEP provides one; otherwise save next to the media. */
+  function pickSavePath(defaultDir, defaultName) {
+    try {
+      if (window.cep && window.cep.fs && window.cep.fs.showSaveDialogEx) {
+        var r = window.cep.fs.showSaveDialogEx('Save captions', defaultDir, ['srt'], defaultName);
+        if (r && r.err === 0) {
+          if (!r.data) return null; /* cancelled */
+          var p = String(r.data);
+          if (!/\.srt$/i.test(p)) p += '.srt';
+          return p;
+        }
+      }
+    } catch (e) {}
+    return pathMod.join(defaultDir, defaultName);
+  }
+
+  function setCaptionsStatus(text, kind) {
+    els.captionsStatus.textContent = text;
+    els.captionsStatus.className = 'hint' + (kind ? ' ' + kind : '');
+  }
+
+  /* AutoCaptions, the local way: transcribe the selection and write an .srt
+     whose times match the sequence as it is right now — so run it on the
+     finished (already cut) sequence. */
+  function exportCaptions() {
+    if (MOCK) {
+      setCaptionsStatus('Preview mode — would transcribe the selection and save an .srt file.', 'ok');
+      return;
+    }
+    if (!whisperBin || !whisperModel) {
+      setCaptionsStatus('Whisper isn’t ready — see the status below.', 'bad');
+      return;
+    }
+    if (!ffmpegPath) {
+      setCaptionsStatus('ffmpeg isn’t available — check Engine setup.', 'bad');
+      return;
+    }
+    els.captionsBtn.disabled = true;
+    setCaptionsStatus('Reading timeline selection…');
+    callHost('SC_getSelection')
+      .then(function (sel) {
+        var items = sel.audio.length ? sel.audio : sel.video;
+        for (var i = 0; i < items.length; i++) {
+          if (!items[i].mediaPath) throw new Error('“' + items[i].name + '” has no media file path.');
+          if (Math.abs(items[i].speed - 1) > 0.001) throw new Error('“' + items[i].name + '” isn’t at 100% speed — reset it first.');
+        }
+        var cues = [];
+        var idx = 0;
+        var completedDuration = 0;
+        var totalDuration = 0;
+        for (var d = 0; d < items.length; d++) totalDuration += items[d].outPoint - items[d].inPoint;
+        function nextItem() {
+          if (idx >= items.length) return cues;
+          var item = items[idx++];
+          var itemDuration = item.outPoint - item.inPoint;
+          var lastShownProgress = -1;
+          setCaptionsStatus('Preparing clip ' + idx + ' of ' + items.length + ' — “' + item.name + '”…');
+          return runWhisper(item, 'captions', function (itemProgress) {
+            var overall = totalDuration > 0
+              ? Math.round((completedDuration + itemDuration * itemProgress / 100) / totalDuration * 100)
+              : itemProgress;
+            if (overall === lastShownProgress) return;
+            lastShownProgress = overall;
+            setCaptionsStatus('Transcribing ' + overall + '% · clip ' + idx + ' of ' + items.length + ' — “' + item.name + '”…');
+          }).then(function (segs) {
+            for (var k = 0; k < segs.length; k++) {
+              cues.push({ t0: item.start + segs[k].t0, t1: item.start + segs[k].t1, text: segs[k].text });
+            }
+            completedDuration += itemDuration;
+            return nextItem();
+          });
+        }
+        return Promise.resolve(nextItem()).then(function (allCues) {
+          var srt = buildSrt(allCues);
+          if (!srt) throw new Error('No speech found in the selection.');
+          var defName = String(sel.sequence.name || 'captions').replace(/[\/\\:]/g, '-') + '.srt';
+          var defDir = pathMod.dirname(items[0].mediaPath);
+          var target = pickSavePath(defDir, defName);
+          if (target === null) { setCaptionsStatus('Export cancelled.'); return; }
+          fs.writeFileSync(target, srt, 'utf8');
+          setCaptionsStatus('Saved: ' + target + ' — import it into Premiere (File ▸ Import).', 'ok');
+          log('Captions exported to ' + target, 'ok');
+        });
+      })
+      .catch(function (err) { setCaptionsStatus(err.message, err.cancelled ? '' : 'bad'); })
+      .then(function () { els.captionsBtn.disabled = false; });
   }
 
   /* ---------------- range building ---------------- */
@@ -580,7 +865,51 @@
 
   /* ---------------- analyze ---------------- */
 
+  /* Synthetic 90s talking clip for ?mock=1 dev preview. */
+  function mockAnalysis() {
+    var dur = 90;
+    var cuts = [
+      [3.8, 6.2], [12.5, 13.6], [28.4, 31.0], [40.2, 41.1],
+      [52.0, 55.5], [70.8, 73.2], [84.0, 86.5]
+    ];
+    var words = [[21.0, 21.6, 'um', 'filler'], [63.3, 64.0, 'uh', 'filler'], [45.2, 45.7, 'shit', 'profanity']];
+    var ranges = [];
+    var i;
+    for (i = 0; i < cuts.length; i++) {
+      ranges.push({ start: cuts[i][0], end: cuts[i][1], rt: 'audio', ri: 0, enabled: true, kind: 'silence', label: '' });
+    }
+    for (i = 0; i < words.length; i++) {
+      ranges.push({ start: words[i][0], end: words[i][1], rt: 'audio', ri: 0, enabled: true, kind: words[i][3], label: words[i][2] });
+    }
+    ranges.sort(function (a, b) { return a.start - b.start; });
+
+    var buckets = 1400;
+    var peaks = new Float32Array(buckets);
+    for (i = 0; i < buckets; i++) {
+      var t = (i / buckets) * dur;
+      var silent = false;
+      for (var j = 0; j < cuts.length; j++) {
+        if (t >= cuts[j][0] - 0.15 && t <= cuts[j][1] + 0.15) { silent = true; break; }
+      }
+      peaks[i] = silent
+        ? 0.02 + Math.random() * 0.03
+        : 0.2 + Math.abs(Math.sin(t * 2.7)) * 0.5 * (0.5 + Math.random() * 0.5);
+    }
+
+    var item = { name: 'Interview A.mov', trackIndex: 0, start: 0, end: dur, inPoint: 0, outPoint: dur, mediaPath: '/mock/Interview A.mov', speed: 1 };
+    lastAnalysis = {
+      sel: { video: [item], audio: [item], sequence: { name: 'Mock sequence', frameSeconds: 1 / 25 } },
+      ranges: ranges,
+      analysisItems: [item],
+      wave: { t0: 0, t1: dur, items: [{ start: 0, end: dur, peaks: peaks }] }
+    };
+    renderResults();
+    log('Preview mode — sample analysis rendered.', 'ok');
+  }
+
   function analyze() {
+    hideNotice();
+    if (MOCK) { mockAnalysis(); return; }
     lastAnalysis = null;
     els.results.hidden = true;
     setWorkflow('select');
@@ -608,11 +937,13 @@
           throw new Error('ffmpeg isn’t available — check Engine setup at the bottom of the panel.');
         }
 
-        var wantFillers = settings.fillersOn;
-        if (wantFillers && (!whisperBin || !whisperModel)) {
-          wantFillers = false;
+        var wantWords = settings.fillersOn || settings.profanityOn;
+        if (wantWords && (!whisperBin || !whisperModel)) {
+          wantWords = false;
           fillerWarned = true;
         }
+        var fillers = settings.fillersOn ? wordSet(settings.fillerWords) : null;
+        var profanity = settings.profanityOn ? wordSet(settings.profanityWords) : null;
 
         var frameSec = sel.sequence.frameSeconds;
         var allRanges = [];
@@ -629,20 +960,30 @@
           return runSilenceDetect(item).then(function (silences) {
             var silenceRanges = buildCutRanges(silences, item, frameSec, sel);
 
-            function finishItem(fillerRanges) {
-              allRanges = allRanges.concat(silenceRanges, dedupeFillers(fillerRanges, silenceRanges));
+            function finishItem(words) {
+              var fillerRanges = fillers ? buildWordRanges(words, item, frameSec, sel, fillers, 'filler') : [];
+              fillerRanges = dedupeAgainst(fillerRanges, silenceRanges);
+              var muteRanges = profanity ? buildWordRanges(words, item, frameSec, sel, profanity, 'profanity') : [];
+              muteRanges = dedupeAgainst(muteRanges, silenceRanges.concat(fillerRanges));
+              allRanges = allRanges.concat(silenceRanges, fillerRanges, muteRanges);
               return runPeaks(item).then(function (peaks) {
                 waveItems.push({ start: item.start, end: item.end, peaks: peaks });
                 return nextItem();
               });
             }
 
-            if (wantFillers) {
-              els.analyzeBtn.textContent = 'Transcribing ' + idx + '/' + items.length + '…';
-              log('Transcribing “' + item.name + '” for fillers — roughly a minute per 10 minutes of audio…');
-              return runWhisper(item).then(
-                function (words) { return finishItem(buildFillerRanges(words, item, frameSec, sel)); },
+            if (wantWords) {
+              var lastWordProgress = -1;
+              els.analyzeBtn.textContent = 'Preparing transcription ' + idx + '/' + items.length + '…';
+              log('Transcribing “' + item.name + '” — roughly a minute per 10 minutes of audio…');
+              return runWhisper(item, 'words', function (progress) {
+                if (progress === lastWordProgress) return;
+                lastWordProgress = progress;
+                els.analyzeBtn.textContent = 'Transcribing ' + progress + '% · clip ' + idx + '/' + items.length;
+              }).then(
+                finishItem,
                 function (err) {
+                  if (err.cancelled) throw err;
                   fillerWarned = true;
                   console.error(err);
                   return finishItem([]);
@@ -658,6 +999,13 @@
         r.ranges.sort(function (a, b) { return a.start - b.start; });
         if (!r.ranges.length) {
           log('Nothing found — raise the noise level or shorten the minimum silence.', 'warn');
+          showNotice('No silences found with the current settings. Try a livelier preset, or raise the noise floor.', 'warn', {
+            actionLabel: 'Open detection settings',
+            onAction: function () {
+              els.refineDetails.open = true;
+              els.refineDetails.scrollIntoView({ block: 'nearest' });
+            }
+          });
           setWorkflow('select');
           return;
         }
@@ -675,16 +1023,23 @@
         };
         renderResults();
         if (fillerWarned) {
-          log('Done, but filler detection was skipped — check Filler-word removal.', 'warn');
+          log('Done, but word detection was skipped — check Speech tools.', 'warn');
         } else {
           log('Analysis done. Click cuts in the waveform or list to keep them.');
         }
       })
       .catch(function (err) {
         setWorkflow('select');
-        if (els.workflowTitle) els.workflowTitle.textContent = 'Check the selection';
-        if (els.workflowHint) els.workflowHint.textContent = 'Resolve the message below, then try again.';
-        log(err.message, 'bad');
+        if (err.cancelled) {
+          if (els.workflowTitle) els.workflowTitle.textContent = 'Analysis cancelled';
+          if (els.workflowHint) els.workflowHint.textContent = 'Nothing was changed in Premiere.';
+          log(err.message);
+        } else {
+          if (els.workflowTitle) els.workflowTitle.textContent = 'Check the selection';
+          if (els.workflowHint) els.workflowHint.textContent = 'Resolve the message below, then try again.';
+          showNotice(err.message, 'bad');
+          log(err.message, 'bad');
+        }
       })
       .then(function () {
         els.analyzeBtn.disabled = false;
@@ -710,17 +1065,25 @@
     for (var i = 0; i < wave.items.length; i++) span += wave.items[i].end - wave.items[i].start;
     var total = 0;
     var fillers = 0;
+    var mutes = 0;
     for (var j = 0; j < ranges.length; j++) {
+      if (ranges[j].kind === 'profanity') { mutes++; continue; } /* muting keeps the timing */
       total += ranges[j].end - ranges[j].start;
       if (ranges[j].kind === 'filler') fillers++;
     }
     var pct = span > 0 ? Math.round((total / span) * 100) : 0;
     var parts = ranges.length + ' of ' + lastAnalysis.ranges.length + ' cuts';
-    if (fillers > 0) parts += ' (' + (ranges.length - fillers) + ' silences, ' + fillers + ' fillers)';
+    if (fillers > 0 || mutes > 0) {
+      var bits = [(ranges.length - fillers - mutes) + ' silences'];
+      if (fillers > 0) bits.push(fillers + ' fillers');
+      if (mutes > 0) bits.push(mutes + ' muted');
+      parts += ' (' + bits.join(', ') + ')';
+    }
     els.summary.textContent = parts + ' · removes ' + fmtTime(total) + ' of ' + fmtTime(span) + ' (' + pct + '%)';
     els.cutBtn.disabled = ranges.length === 0;
     var verb = settings.mode === 'mute' ? 'Mute' : (settings.mode === 'cutonly' ? 'Cut at' : 'Remove');
-    var noun = fillers > 0 ? 'cut' : 'silence';
+    if (mutes > 0 && settings.mode !== 'mute') verb = 'Apply';
+    var noun = (fillers > 0 || mutes > 0) ? 'cut' : 'silence';
     els.cutBtn.textContent = verb + ' ' + ranges.length + ' ' + noun + (ranges.length === 1 ? '' : 's');
   }
 
@@ -729,7 +1092,7 @@
     var c = els.wave;
     var dpr = window.devicePixelRatio || 1;
     var W = c.clientWidth;
-    var H = 64;
+    var H = c.clientHeight || 80;
     c.width = Math.max(1, Math.round(W * dpr));
     c.height = Math.round(H * dpr);
     var ctx = c.getContext('2d');
@@ -740,6 +1103,7 @@
     var colWave = (css.getPropertyValue('--accent') || '#4cc38a').trim();
     var colBad = (css.getPropertyValue('--bad') || '#e5645a').trim();
     var colWarn = (css.getPropertyValue('--warn') || '#e0b64f').trim();
+    var colGood = (css.getPropertyValue('--good') || '#9cb7a3').trim();
 
     ctx.fillStyle = colBg;
     ctx.fillRect(0, 0, W, H);
@@ -792,17 +1156,21 @@
       if (r.enabled) {
         ctx.fillStyle = 'rgba(20,20,20,0.72)';
         ctx.fillRect(x0, 0, w, H);
-        ctx.fillStyle = r.kind === 'filler' ? colWarn : colBad;
+        ctx.fillStyle = r.kind === 'filler' ? colWarn : (r.kind === 'profanity' ? colGood : colBad);
         ctx.fillRect(x0, 0, w, 2.5);
       } else {
         ctx.fillStyle = 'rgba(255,255,255,0.10)';
         ctx.fillRect(x0, 0, w, H);
       }
+      if (i === hoverRange) {
+        ctx.strokeStyle = colWave;
+        ctx.strokeRect(x0 + 0.5, 0.5, Math.max(1, w - 1), H - 1);
+      }
     }
   }
 
-  function waveClick(ev) {
-    if (!lastAnalysis) return;
+  function rangeIndexAt(ev) {
+    if (!lastAnalysis) return -1;
     var rect = els.wave.getBoundingClientRect();
     var frac = (ev.clientX - rect.left) / Math.max(1, rect.width);
     var time = lastAnalysis.wave.t0 + frac * (lastAnalysis.wave.t1 - lastAnalysis.wave.t0);
@@ -810,11 +1178,55 @@
     var slack = dur / Math.max(1, rect.width) * 3; /* ~3px of forgiveness */
     for (var i = 0; i < lastAnalysis.ranges.length; i++) {
       var r = lastAnalysis.ranges[i];
-      if (time >= r.start - slack && time <= r.end + slack) {
-        toggleRange(i);
-        return;
-      }
+      if (time >= r.start - slack && time <= r.end + slack) return i;
     }
+    return -1;
+  }
+
+  function describeRange(r) {
+    var what = r.kind === 'silence' ? 'silence' :
+      '“' + r.label + '”' + (r.kind === 'profanity' ? ' (mute)' : '');
+    var action = r.enabled ? 'click to keep' : (r.kind === 'profanity' ? 'click to mute' : 'click to cut');
+    return fmtTime(r.start) + ' · ' + (r.end - r.start).toFixed(1) + 's ' + what + ' — ' + action;
+  }
+
+  function updateWaveTip(idx, ev) {
+    if (idx < 0) {
+      els.waveTip.hidden = true;
+      return;
+    }
+    var rect = els.wave.getBoundingClientRect();
+    var x = ev.clientX - rect.left;
+    els.waveTip.textContent = describeRange(lastAnalysis.ranges[idx]);
+    els.waveTip.hidden = false;
+    var half = els.waveTip.offsetWidth / 2 + 4;
+    els.waveTip.style.left = Math.min(Math.max(x, half), rect.width - half) + 'px';
+  }
+
+  function setHoverRange(idx) {
+    if (idx === hoverRange) return;
+    hoverRange = idx;
+    if (lastAnalysis) drawWave();
+  }
+
+  function waveMove(ev) {
+    if (!lastAnalysis) return;
+    var idx = rangeIndexAt(ev);
+    setHoverRange(idx);
+    els.wave.style.cursor = idx >= 0 ? 'pointer' : 'default';
+    updateWaveTip(idx, ev);
+  }
+
+  function waveLeave() {
+    setHoverRange(-1);
+    els.waveTip.hidden = true;
+  }
+
+  function waveClick(ev) {
+    var idx = rangeIndexAt(ev);
+    if (idx < 0) return;
+    toggleRange(idx);
+    updateWaveTip(idx, ev); /* refresh the keep/cut hint after toggling */
   }
 
   function toggleRange(i) {
@@ -826,6 +1238,32 @@
     if (row) row.className = 'listRow' + (r.enabled ? '' : ' off');
     updateSummary();
     drawWave();
+  }
+
+  function setAllRanges(enabled) {
+    if (!lastAnalysis) return;
+    for (var i = 0; i < lastAnalysis.ranges.length; i++) {
+      var r = lastAnalysis.ranges[i];
+      if (r.enabled === enabled) continue;
+      r.enabled = enabled;
+      var box = document.getElementById('cutchk_' + i);
+      if (box) box.checked = enabled;
+      var row = document.getElementById('cutrow_' + i);
+      if (row) row.className = 'listRow' + (enabled ? '' : ' off');
+    }
+    updateSummary();
+    drawWave();
+  }
+
+  /* Park the playhead just before the cut so pressing space in Premiere
+     auditions it in context. */
+  function seekToCut(idx) {
+    var r = lastAnalysis && lastAnalysis.ranges[idx];
+    if (!r) return;
+    if (MOCK) { log('Preview mode — would move the playhead to ' + fmtTime(r.start) + '.'); return; }
+    callHost('SC_seekTo', { seconds: Math.max(0, r.start - 0.5) })
+      .then(function () { log('Playhead moved to ' + fmtTime(r.start) + ' — press space in Premiere to audition.'); })
+      .catch(function (err) { log(err.message, 'bad'); });
   }
 
   function renderResults() {
@@ -841,20 +1279,32 @@
         box.id = 'cutchk_' + idx;
         box.checked = r.enabled;
         box.addEventListener('change', function () { toggleRange(idx); box.checked = r.enabled; });
+        var seek = document.createElement('button');
+        seek.className = 'rowSeek';
+        seek.title = 'Move the Premiere playhead to this cut';
+        seek.innerHTML = '<svg width="9" height="10" viewBox="0 0 9 10" aria-hidden="true"><path d="M1 1L8 5L1 9Z" fill="currentColor"/></svg>';
+        seek.addEventListener('click', function (ev) {
+          ev.preventDefault(); /* don't let the label toggle the checkbox */
+          ev.stopPropagation();
+          seekToCut(idx);
+        });
         var left = document.createElement('span');
         left.textContent = fmtTime(r.start) + ' → ' + fmtTime(r.end);
         row.appendChild(box);
+        row.appendChild(seek);
         row.appendChild(left);
-        if (r.kind === 'filler') {
+        if (r.kind === 'filler' || r.kind === 'profanity') {
           var tag = document.createElement('span');
-          tag.className = 'tag';
-          tag.textContent = '“' + r.label + '”';
+          tag.className = r.kind === 'profanity' ? 'tag mute' : 'tag';
+          tag.textContent = '“' + r.label + '”' + (r.kind === 'profanity' ? ' · mute' : '');
           row.appendChild(tag);
         }
         var right = document.createElement('span');
         right.className = 'dim';
         right.textContent = (r.end - r.start).toFixed(1) + 's';
         row.appendChild(right);
+        row.addEventListener('mouseenter', function () { setHoverRange(idx); });
+        row.addEventListener('mouseleave', function () { setHoverRange(-1); });
         els.list.appendChild(row);
       })(k);
     }
@@ -869,6 +1319,8 @@
     }
     els.resultsHint.textContent = warn || 'Don’t move clips between analyzing and applying.';
 
+    els.staleBar.hidden = true;
+    hoverRange = -1;
     els.results.hidden = false;
     setWorkflow('review');
     updateSummary();
@@ -884,9 +1336,14 @@
     if (!ranges.length) return;
 
     var payload = {
-      ranges: ranges.map(function (r) { return { start: r.start, end: r.end, rt: r.rt, ri: r.ri }; }),
+      ranges: ranges.map(function (r) {
+        return { start: r.start, end: r.end, rt: r.rt, ri: r.ri, action: r.kind === 'profanity' ? 'mute' : 'cut' };
+      }),
       videoTracks: uniqTracks(sel.video),
       audioTracks: uniqTracks(sel.audio),
+      videoItems: sel.video.map(function (item) {
+        return { name: item.name, trackIndex: item.trackIndex, start: item.start, end: item.end };
+      }),
       videoNames: names(sel.video),
       audioNames: names(sel.audio),
       mode: settings.mode,
@@ -898,7 +1355,19 @@
     els.cutBtn.disabled = true;
     els.cutBtn.textContent = 'Working…';
     setWorkflow('apply');
+    hideNotice();
     log('Applying — this can take a moment…');
+
+    if (MOCK) {
+      setTimeout(function () {
+        showNotice('Preview mode — removed ' + ranges.length + ' segments in “Mock sequence Copy”.', 'ok');
+        log('Preview mode — nothing was applied.', 'ok');
+        lastAnalysis = null;
+        els.results.hidden = true;
+        setWorkflow('select');
+      }, 600);
+      return;
+    }
 
     callHost('SC_cutSilences', payload)
       .then(function (res) {
@@ -912,16 +1381,21 @@
             ' (' + fmtTime(res.savedSeconds) + ')';
         }
         msg += ' in “' + res.sequenceName + '”.';
+        if (res.mutedWords) msg += ' Muted ' + res.mutedWords + ' word' + (res.mutedWords === 1 ? '' : 's') + '.';
         if (res.zoomed) msg += ' Zoomed ' + res.zoomed + ' segments.';
         if (res.crossfades) msg += ' Added ' + res.crossfades + ' crossfades.';
         if (res.blocked > 0) msg += ' ' + res.blocked + ' delete(s) blocked — check overlapping clips or locked tracks.';
         log(msg, res.blocked > 0 ? 'warn' : 'ok');
+        showNotice(msg, res.blocked > 0 ? 'warn' : 'ok');
         lastAnalysis = null;
         els.results.hidden = true;
         setWorkflow('select');
+        if (els.workflowTitle) els.workflowTitle.textContent = 'Cut applied';
+        if (els.workflowHint) els.workflowHint.textContent = 'Review it in Premiere — Cmd+Z undoes it.';
       })
       .catch(function (err) {
         log(err.message, 'bad');
+        showNotice(err.message, 'bad');
         els.cutBtn.disabled = false;
         setWorkflow('review');
         if (lastAnalysis) updateSummary();
@@ -929,6 +1403,12 @@
   }
 
   /* ---------------- init / bindings ---------------- */
+
+  /* Settings that change what the next analysis would find. */
+  var DETECTION_KEYS = {
+    thresholdDb: true, minSilence: true, marginAfterMs: true,
+    marginBeforeMs: true, minKeepMs: true
+  };
 
   function bindSlider(id, valId, key, format, clearsPreset) {
     var input = $(id);
@@ -942,6 +1422,7 @@
         settings.preset = '';
         renderPresetChips();
       }
+      if (DETECTION_KEYS[key]) markDetectionChanged();
       saveSettings();
     });
     return function refresh() {
@@ -985,26 +1466,37 @@
     settings.preset = name;
     for (var i = 0; i < sliderRefreshers.length; i++) sliderRefreshers[i]();
     renderPresetChips();
+    markDetectionChanged();
     saveSettings();
   }
 
   function init() {
-    var ids = ['log', 'analyzeBtn', 'cutBtn', 'results', 'summary', 'wave', 'list', 'resultsHint',
+    var ids = ['log', 'analyzeBtn', 'cancelBtn', 'cutBtn', 'results', 'summary', 'wave', 'list', 'resultsHint',
       'ffmpegPath', 'ffmpegStatus', 'hostDot', 'presets', 'thr', 'thrVal', 'autoThrBtn',
       'zoomScaleRow', 'fillersOn', 'fillerWords', 'whisperPath', 'whisperStatus', 'modelBtn',
       'workflowSelect', 'workflowReview', 'workflowApply', 'workflowTitle', 'workflowHint',
-      'presetBadge', 'planSummary'];
+      'presetBadge', 'planSummary', 'notice', 'noticeText', 'noticeBtn', 'allBtn', 'noneBtn',
+      'staleBar', 'reanalyzeBtn', 'waveTip', 'refineDetails', 'engineDetails',
+      'profanityOn', 'profanityWords', 'captionsBtn', 'captionsStatus'];
     for (var i = 0; i < ids.length; i++) els[ids[i]] = $(ids[i]);
 
     settings = loadSettings();
 
     /* preset chips */
     var chipNames = ['Calm', 'Measured', 'Paced', 'Energetic', 'Jumpy'];
+    var chipHints = {
+      Calm: 'Gentle podcast pacing — only long pauses go',
+      Measured: 'Relaxed but tidy',
+      Paced: 'Balanced default for talking videos',
+      Energetic: 'Tight YouTube pacing',
+      Jumpy: 'Aggressive jump cuts — shortest pauses go too'
+    };
     for (var c = 0; c < chipNames.length; c++) {
       (function (name) {
         var chip = document.createElement('button');
         chip.className = 'chip';
         chip.textContent = name;
+        chip.title = chipHints[name] || '';
         chip.setAttribute('data-preset', name);
         chip.addEventListener('click', function () { applyPreset(name); });
         els.presets.appendChild(chip);
@@ -1050,15 +1542,24 @@
     els.zoomScaleRow.className = 'slider sub' + (zoomBox.checked ? '' : ' dimmed');
     bindCheck('crossfadeOn', 'crossfadeOn');
     bindCheck('duplicateFirst', 'duplicateFirst');
-    bindCheck('fillersOn', 'fillersOn');
+    bindCheck('fillersOn', 'fillersOn', markDetectionChanged);
+    bindCheck('profanityOn', 'profanityOn', markDetectionChanged);
     updatePlanSummary();
 
-    /* fillers */
+    /* speech tools */
     els.fillerWords.value = settings.fillerWords;
     els.fillerWords.addEventListener('change', function () {
       settings.fillerWords = els.fillerWords.value;
+      markDetectionChanged();
       saveSettings();
     });
+    els.profanityWords.value = settings.profanityWords;
+    els.profanityWords.addEventListener('change', function () {
+      settings.profanityWords = els.profanityWords.value;
+      markDetectionChanged();
+      saveSettings();
+    });
+    els.captionsBtn.addEventListener('click', exportCaptions);
     els.whisperPath.value = settings.whisperPath || '';
     els.whisperPath.addEventListener('change', function () {
       settings.whisperPath = els.whisperPath.value.trim();
@@ -1075,7 +1576,11 @@
     });
 
     els.analyzeBtn.addEventListener('click', analyze);
+    els.cancelBtn.addEventListener('click', cancelTranscription);
     els.cutBtn.addEventListener('click', applyCuts);
+    els.reanalyzeBtn.addEventListener('click', analyze);
+    els.allBtn.addEventListener('click', function () { setAllRanges(true); });
+    els.noneBtn.addEventListener('click', function () { setAllRanges(false); });
     els.autoThrBtn.addEventListener('click', function () {
       if (!ffmpegPath) { log('ffmpeg isn’t available yet.', 'bad'); return; }
       if (!lastSelectionOrNull()) {
@@ -1085,7 +1590,24 @@
       autoThreshold();
     });
     els.wave.addEventListener('click', waveClick);
+    els.wave.addEventListener('mousemove', waveMove);
+    els.wave.addEventListener('mouseleave', waveLeave);
     window.addEventListener('resize', function () { if (lastAnalysis) drawWave(); });
+
+    /* Selection freshness: the user selects clips with the panel unfocused,
+       then moves the mouse back over it — that's our cue to look again. */
+    window.addEventListener('focus', refreshSelectionHint);
+    window.addEventListener('mouseover', refreshSelectionHint);
+
+    if (MOCK) {
+      els.hostDot.className = 'dot ok';
+      els.ffmpegStatus.textContent = 'Preview mode — running outside Premiere.';
+      els.ffmpegStatus.className = 'hint';
+      els.whisperStatus.textContent = 'Preview mode — running outside Premiere.';
+      els.whisperStatus.className = 'hint';
+      els.workflowHint.textContent = 'Preview mode — Analyze shows sample data.';
+      return;
+    }
 
     callHost('SC_ping')
       .then(function () { els.hostDot.className = 'dot ok'; })
