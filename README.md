@@ -7,6 +7,10 @@ waveform, then apply the edit to a protected duplicate sequence.
 Detection runs locally through ffmpeg's `silencedetect` filter. Footage is never
 uploaded.
 
+<p align="center">
+  <img src="docs/cutty-panel.png" alt="Cutty's Premiere Pro panel" width="360">
+</p>
+
 ## Download
 
 Download the latest `Cutty-v*.zip` from the
