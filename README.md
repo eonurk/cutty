@@ -41,9 +41,14 @@ unsigned/development panels; `uninstall.sh` can revert it).
 
 1. Open your sequence and **select the talking clip(s)** in the timeline
    (multiple clips are fine; linked audio selected along with them is fine).
+   The panel shows how many clips are selected as soon as you mouse over it.
 2. **Analyze selected clips** — the preview shows the waveform with every cut
-   marked, plus a list. Click cuts in the waveform or list to toggle them.
-3. Adjust settings or pick a preset and re-analyze until it looks right.
+   marked, plus a list. Hover the waveform to inspect a cut and click it (or
+   its list row) to toggle it; **All / None** toggles every cut at once. The ▶
+   button on a row parks Premiere's playhead just before that cut so you can
+   audition it with the spacebar.
+3. Adjust settings or pick a preset and re-analyze until it looks right — the
+   results flag themselves as stale whenever a detection setting changes.
 4. Apply.
 
 ### Presets
@@ -89,11 +94,27 @@ download of `ggml-base.bin` (~148 MB, from Hugging Face) and stores it in
 - For better accuracy, download `ggml-small.bin` (~488 MB) from the same
   Hugging Face repo and point the model path at it.
 
+### Profanity muting
+
+Enable **Mute profanity** (in Speech tools) to silence swear words in place:
+each detected word is razored and its audio level set to zero, so the timing
+of the video never changes. Muted words show in **green** on the waveform and
+carry a `· mute` tag in the list. The word list is editable — Whisper
+sometimes censors its own output, so add variants like `f***` if needed.
+
+### Captions
+
+**Export captions (.srt)** (in Speech tools) transcribes the selected clips
+locally and writes an SRT whose timestamps match the timeline as it is right
+now — so run it on the finished sequence, after cutting. Import the file into
+Premiere with **File ▸ Import** to get a caption track.
+
 ### Extras
 
 - **Constant Power crossfade at cuts** — smooths audio junctions after removal.
-- **Alternate punch-in zoom** — every other kept segment gets scaled up
-  (default 112%) to hide jump cuts, AutoZoom-style.
+- **Alternate punch-in zoom** — every other kept segment gets a relative
+  punch-in (default 112% of that clip’s existing scale) to hide jump cuts.
+  It only applies when silences are removed, and leaves keyframed scale alone.
 - **Work on a duplicate** (default on) — clones the sequence and edits the
   copy. Recommended: Premiere has no undo grouping for scripts, so undoing a
   run is one Cmd+Z per segment.
@@ -127,6 +148,9 @@ download of `ggml-base.bin` (~148 MB, from Hugging Face) and stores it in
 The panel logs to its footer line. For a full console, open
 <http://localhost:8092> in Chrome while the panel is open in Premiere
 (remote debugging is enabled via the `.debug` file).
+
+To iterate on the UI without Premiere, serve the repo and open
+`index.html?mock=1` in a browser — Analyze/Apply run against synthetic data.
 
 ## Uninstall
 

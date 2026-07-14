@@ -116,6 +116,21 @@ function SC_getSelection() {
   }
 }
 
+/* Move the playhead so a proposed cut can be auditioned in context.
+   payload: { seconds: number } — sequence time. */
+function SC_seekTo(payloadJson) {
+  try {
+    var p = SC_fromJson(payloadJson);
+    var seq = app.project.activeSequence;
+    if (!seq) return SC_toJson({ error: 'No active sequence.' });
+    var ticks = Math.max(0, Math.round(p.seconds * SC_TICKS_PER_SECOND));
+    seq.setPlayerPosition(String(ticks));
+    return SC_toJson({ ok: true });
+  } catch (e) {
+    return SC_toJson({ error: 'Could not move the playhead: ' + e.toString() });
+  }
+}
+
 function SC_duplicateActiveSequence() {
   var proj = app.project;
   var before = {};
@@ -148,6 +163,30 @@ function SC_setComponentProp(item, componentName, propName, value) {
             return true;
           }
         }
+      }
+    }
+  } catch (e) {}
+  return false;
+}
+
+/* Scale relative to the clip's existing Motion > Scale value. Premiere often
+   fits 4K footage into an HD sequence at ~50%; replacing that with 112 would
+   create a huge crop. Keyframed scale is left alone rather than flattened. */
+function SC_scaleItemRelative(item, factor) {
+  try {
+    var comps = item.components;
+    for (var i = 0; i < comps.numItems; i++) {
+      if (String(comps[i].displayName) !== 'Motion') continue;
+      var props = comps[i].properties;
+      for (var j = 0; j < props.numItems; j++) {
+        if (String(props[j].displayName) !== 'Scale') continue;
+        try {
+          if (props[j].isTimeVarying && props[j].isTimeVarying()) return false;
+        } catch (eTime) {}
+        var current = Number(props[j].getValue());
+        if (!isFinite(current) || current <= 0) return false;
+        props[j].setValue(current * factor, true);
+        return true;
       }
     }
   } catch (e) {}
@@ -199,9 +238,12 @@ function SC_applyCrossfades(qeSeq, audioTrackIndexes, nameSet, ticksPerFrame) {
 /* ---------------- the cut ---------------- */
 
 /* payload: {
-     ranges: [{start, end, rt, ri}]   silent parts, sequence seconds;
+     ranges: [{start, end, rt, ri, action}]   sequence seconds;
                                       rt/ri = ripple track type ('video'|'audio') + index
+                                      action: 'cut' (default) removed per mode,
+                                              'mute' razored + volume zeroed in place
      videoTracks: [int], audioTracks: [int]   tracks to razor / edit on
+     videoItems: [{name, trackIndex, start, end}] original selected video clips
      videoNames: [string], audioNames: [string]   names of the processed clips
      mode: 'ripple' | 'gaps' | 'cutonly' | 'mute'
      duplicateFirst: bool
@@ -228,24 +270,36 @@ function SC_cutSilences(payloadJson) {
     var frameSec = ticksPerFrame / SC_TICKS_PER_SECOND;
     var i;
 
-    /* Snap ranges to frame boundaries, drop sub-frame ones, merge overlaps. */
-    var ranges = [];
+    /* Snap ranges to frame boundaries, drop sub-frame ones, merge overlaps.
+       Cut and mute ranges are handled separately: mutes never move clips. */
+    function mergeRanges(list) {
+      list.sort(function (a, b) { return a.f0 - b.f0; });
+      var out = [];
+      for (var k = 0; k < list.length; k++) {
+        var last = out.length ? out[out.length - 1] : null;
+        if (last && list[k].f0 <= last.f1) {
+          if (list[k].f1 > last.f1) last.f1 = list[k].f1;
+        } else {
+          out.push(list[k]);
+        }
+      }
+      return out;
+    }
+    var cutRanges = [];
+    var muteRanges = [];
     for (i = 0; i < p.ranges.length; i++) {
       var f0 = Math.round(p.ranges[i].start / frameSec);
       var f1 = Math.round(p.ranges[i].end / frameSec);
-      if (f1 - f0 >= 1) ranges.push({ f0: f0, f1: f1, rt: p.ranges[i].rt, ri: p.ranges[i].ri });
+      if (f1 - f0 < 1) continue;
+      var entry = { f0: f0, f1: f1, rt: p.ranges[i].rt, ri: p.ranges[i].ri };
+      if (p.ranges[i].action === 'mute') muteRanges.push(entry);
+      else cutRanges.push(entry);
     }
-    ranges.sort(function (a, b) { return a.f0 - b.f0; });
-    var merged = [];
-    for (i = 0; i < ranges.length; i++) {
-      var last = merged.length ? merged[merged.length - 1] : null;
-      if (last && ranges[i].f0 <= last.f1) {
-        if (ranges[i].f1 > last.f1) last.f1 = ranges[i].f1;
-      } else {
-        merged.push(ranges[i]);
-      }
+    var merged = mergeRanges(cutRanges);
+    var muteMerged = mergeRanges(muteRanges);
+    if (!merged.length && !muteMerged.length) {
+      return SC_toJson({ error: 'Nothing to cut — every range is shorter than one frame.' });
     }
-    if (!merged.length) return SC_toJson({ error: 'Nothing to cut — every range is shorter than one frame.' });
 
     function razorAt(frame) {
       /* Move the CTI so QE hands us a correctly formatted timecode string
@@ -267,9 +321,56 @@ function SC_cutSilences(payloadJson) {
       razorAt(merged[i].f0);
       razorAt(merged[i].f1);
     }
+    for (i = 0; i < muteMerged.length; i++) {
+      razorAt(muteMerged[i].f0);
+      razorAt(muteMerged[i].f1);
+    }
 
     var eps = frameSec * 0.5 + 0.000001;
     var blocked = 0;
+
+    /* Capture the intended punch-in pieces before ripple deletes move them.
+       Alternation is based only on removed ranges, so mute-only razors do not
+       cause a visual jump. Object references remain valid when later clips
+       ripple left. */
+    var zoomTargets = [];
+    if (p.zoom && p.zoom.on && (p.mode === 'ripple' || p.mode === 'gaps') && p.videoItems) {
+      var zoomFactor = Number(p.zoom.scale) / 100;
+      if (isFinite(zoomFactor) && zoomFactor > 1) {
+        for (var zsi = 0; zsi < p.videoItems.length; zsi++) {
+          var scope = p.videoItems[zsi];
+          var zTrack = null;
+          try { zTrack = seq.videoTracks[scope.trackIndex]; } catch (eZT) {}
+          if (!zTrack) continue;
+          for (var zci = 0; zci < zTrack.clips.numItems; zci++) {
+            var zItem = zTrack.clips[zci];
+            var zs = zItem.start.seconds;
+            var ze = zItem.end.seconds;
+            if (String(zItem.name) !== String(scope.name) ||
+                zs < Number(scope.start) - eps || ze > Number(scope.end) + eps) continue;
+
+            var removedPiece = false;
+            var cutsBefore = 0;
+            for (var zri = 0; zri < merged.length; zri++) {
+              var zr0 = merged[zri].f0 * frameSec;
+              var zr1 = merged[zri].f1 * frameSec;
+              if (zs >= zr0 - eps && ze <= zr1 + eps) {
+                removedPiece = true;
+                break;
+              }
+              /* A cut that starts before this selected clip must not make its
+                 first surviving piece begin zoomed. */
+              if (zr1 <= zs + eps && zr0 > Number(scope.start) + eps &&
+                  zr0 < Number(scope.end) - eps) cutsBefore++;
+            }
+            if (!removedPiece && cutsBefore % 2 === 1) {
+              var runKey = String(zsi) + ':' + String(cutsBefore);
+              zoomTargets.push({ item: zItem, factor: zoomFactor, runKey: runKey });
+            }
+          }
+        }
+      }
+    }
 
     function eachInRange(track, secStart, secEnd, fn) {
       var n = 0;
@@ -297,7 +398,22 @@ function SC_cutSilences(payloadJson) {
     var removedSegments = 0;
     var savedSeconds = 0;
     var muted = 0;
+    var mutedWords = 0;
     var ti;
+
+    /* Mute-action ranges (profanity) go first, while every time is still
+       pre-shift — ripple deletes below would move them. */
+    for (i = 0; i < muteMerged.length; i++) {
+      var w0 = muteMerged[i].f0 * frameSec;
+      var w1 = muteMerged[i].f1 * frameSec;
+      var gotMute = 0;
+      for (ti = 0; ti < p.audioTracks.length; ti++) {
+        gotMute += eachInRange(seq.audioTracks[p.audioTracks[ti]], w0, w1, function (item) {
+          return SC_setComponentProp(item, 'Volume', 'Level', 0);
+        });
+      }
+      if (gotMute > 0) mutedWords++;
+    }
 
     if (p.mode === 'mute') {
       for (i = 0; i < merged.length; i++) {
@@ -345,25 +461,18 @@ function SC_cutSilences(payloadJson) {
 
     /* ---- polish passes ---- */
 
-    var nameSetV = {};
-    for (i = 0; i < p.videoNames.length; i++) nameSetV[p.videoNames[i]] = true;
     var nameSetA = {};
     for (i = 0; i < p.audioNames.length; i++) nameSetA[p.audioNames[i]] = true;
 
     var zoomed = 0;
-    if (p.zoom && p.zoom.on) {
-      for (ti = 0; ti < p.videoTracks.length; ti++) {
-        var trk = seq.videoTracks[p.videoTracks[ti]];
-        var matched = [];
-        for (var ci = 0; ci < trk.clips.numItems; ci++) {
-          if (nameSetV[String(trk.clips[ci].name)]) matched.push(trk.clips[ci]);
-        }
-        for (var mi = 0; mi < matched.length; mi++) {
-          if (mi % 2 === 1) {
-            if (SC_setComponentProp(matched[mi], 'Motion', 'Scale', p.zoom.scale)) zoomed++;
-          }
-        }
+    var zoomedRuns = {};
+    for (var zi = 0; zi < zoomTargets.length; zi++) {
+      if (SC_scaleItemRelative(zoomTargets[zi].item, zoomTargets[zi].factor)) {
+        zoomedRuns[zoomTargets[zi].runKey] = true;
       }
+    }
+    for (var zk in zoomedRuns) {
+      zoomed++;
     }
 
     var crossfades = 0;
@@ -379,6 +488,7 @@ function SC_cutSilences(payloadJson) {
       savedSeconds: savedSeconds,
       blocked: blocked,
       muted: muted,
+      mutedWords: mutedWords,
       zoomed: zoomed,
       crossfades: crossfades,
       sequenceName: String(seq.name)

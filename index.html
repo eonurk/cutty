@@ -111,11 +111,6 @@
     font-weight: 500;
   }
   .contextTitle svg { color: var(--accent); }
-  .more {
-    margin-left: auto;
-    color: var(--faint);
-    letter-spacing: 2px;
-  }
 
   .workflow {
     position: relative;
@@ -161,6 +156,7 @@
   .workflowStep + .workflowStep { padding-left: 0; }
   .workflowStep > span:last-child { display: none; }
   .workflowStep.active { color: var(--text-strong); }
+  .workflowStep.active > span:last-child { display: inline; margin-left: 5px; }
   .stepNumber {
     display: grid;
     place-items: center;
@@ -210,6 +206,36 @@
     margin-bottom: 4px;
   }
   #analyzeBtn::before { content: "✦ "; color: var(--accent); }
+  #cancelBtn {
+    display: block;
+    margin: 0 0 6px auto;
+    border: 1px solid rgba(223, 119, 112, 0.5);
+    background: transparent;
+    color: var(--bad);
+  }
+
+  .notice {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    margin: 6px 0 2px;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    background: var(--surface);
+    color: var(--muted);
+    font-size: 11px;
+  }
+  .notice.ok { border-color: rgba(156, 183, 163, 0.35); color: var(--good); }
+  .notice.warn { border-color: rgba(209, 170, 99, 0.35); color: var(--warn); }
+  .notice.bad { border-color: rgba(223, 119, 112, 0.4); color: var(--bad); }
+  .notice .btnMini {
+    margin-left: auto;
+    flex: 0 0 auto;
+    border: 1px solid currentColor;
+    background: transparent;
+    color: inherit;
+  }
 
   .card {
     padding: 15px 0 13px;
@@ -227,6 +253,21 @@
     font-size: 10.5px;
     font-weight: 500;
   }
+  .speechDetails {
+    margin-top: 12px;
+    padding-top: 11px;
+    border-top: 1px solid var(--border);
+  }
+  .speechDetails {
+    border-bottom: 0;
+  }
+  .speechDetails summary {
+    min-height: 28px;
+    color: var(--muted);
+    font-size: 10.5px;
+  }
+  .speechDetails .detailsBody { padding: 5px 0 0; }
+  .speechDetails .detailsIntro { margin-bottom: 6px; }
   .coreSafety {
     min-height: 46px;
     margin-top: 5px;
@@ -236,68 +277,6 @@
   }
   details.refine .detailsBody { padding-left: 0; }
   details.refine summary { min-height: 48px; }
-  details.featureDisclosure {
-    margin-top: 12px;
-    border-bottom: 0;
-  }
-  details.featureDisclosure > summary {
-    min-height: 52px;
-    padding: 8px 10px;
-    border: 1px solid var(--border);
-    border-radius: 7px;
-    background: var(--surface);
-  }
-  details.featureDisclosure > summary:hover {
-    border-color: var(--border-strong);
-    background: var(--surface-raised);
-  }
-  details.featureDisclosure > summary::before { display: none; }
-  .disclosureLead { min-width: 0; }
-  .disclosureTitle {
-    display: block;
-    color: var(--text-strong);
-    font-size: 11.5px;
-    font-weight: 500;
-  }
-  .disclosureDetail {
-    display: block;
-    margin-top: 1px;
-    color: var(--muted);
-    font-size: 10.5px;
-  }
-  .summaryAction {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    margin-left: auto;
-    color: var(--accent);
-    font-size: 10.5px;
-  }
-  .summaryAction::before { content: "Open"; }
-  .summaryAction::after {
-    content: "";
-    width: 6px;
-    height: 6px;
-    border-right: 1px solid currentColor;
-    border-bottom: 1px solid currentColor;
-    transform: rotate(45deg) translateY(-2px);
-  }
-  details.featureDisclosure[open] > summary {
-    border-color: var(--border-strong);
-    border-radius: 7px 7px 0 0;
-    background: var(--surface-raised);
-  }
-  details.featureDisclosure[open] .summaryAction::before { content: "Close"; }
-  details.featureDisclosure[open] .summaryAction::after {
-    transform: rotate(225deg) translate(-1px, -1px);
-  }
-  details.featureDisclosure > .detailsBody {
-    padding: 11px 10px 12px;
-    border: 1px solid var(--border-strong);
-    border-top: 0;
-    border-radius: 0 0 7px 7px;
-    background: var(--surface);
-  }
   .cardHead {
     justify-content: space-between;
     gap: 12px;
@@ -530,17 +509,53 @@
     background: var(--surface-raised);
   }
   #results .cardHead { margin-bottom: 8px; }
-  #results .badge { color: var(--accent); }
+  .headActions {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex: 0 0 auto;
+  }
+  #results .btnMini { background: var(--surface); }
+  .staleBar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+    padding: 6px 8px;
+    border-radius: 5px;
+    background: rgba(209, 170, 99, 0.12);
+    color: var(--warn);
+    font-size: 10.5px;
+  }
+  .staleBar .btnMini {
+    margin-left: auto;
+    border: 1px solid currentColor;
+    background: transparent;
+    color: inherit;
+  }
   .summary { margin-bottom: 8px; color: var(--muted); font-size: 10.5px; }
+  .waveWrap { position: relative; margin-bottom: 8px; }
   .wave {
     display: block;
     width: 100%;
-    height: 70px;
-    margin-bottom: 8px;
+    height: 86px;
     border: 0;
     border-radius: 5px;
     background: var(--surface);
-    cursor: pointer;
+  }
+  .waveTip {
+    position: absolute;
+    top: 5px;
+    padding: 2px 7px;
+    border: 1px solid var(--border-strong);
+    border-radius: 4px;
+    background: rgba(17, 20, 26, 0.95);
+    color: var(--text);
+    font-size: 10px;
+    white-space: nowrap;
+    pointer-events: none;
+    transform: translateX(-50%);
+    z-index: 2;
   }
   .list {
     max-height: 135px;
@@ -559,13 +574,28 @@
     font-size: 10.5px;
     cursor: pointer;
   }
+  .rowSeek {
+    display: grid;
+    place-items: center;
+    width: 20px;
+    height: 18px;
+    flex: 0 0 auto;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--faint);
+    cursor: pointer;
+  }
+  .rowSeek:hover { color: var(--accent); background: var(--surface); }
   .listRow + .listRow { border-top: 1px solid var(--border); }
   .listRow input { accent-color: var(--accent); }
   .listRow.off { opacity: 0.4; text-decoration: line-through; }
   .listRow .dim { margin-left: auto; }
   .dim { color: var(--muted); }
   .tag { color: var(--warn); font-size: 10px; }
+  .tag.mute { color: var(--good); }
   #resultsHint { margin-top: 6px; }
+  #captionsBtn { margin: 2px 0 6px; }
 
   footer {
     position: sticky;
@@ -588,6 +618,43 @@
   .log.bad { color: var(--bad); }
   .log.warn { color: var(--warn); }
 
+  /* Readable at Premiere's narrow panel width. */
+  body { font-size: 14px; }
+  header { min-height: 46px; }
+  .brandName { font-size: 14px; }
+  .connection { font-size: 12px; }
+  .contextTitle,
+  .workflowTitle,
+  .btn,
+  .cardTitle { font-size: 13px; }
+  .workflowHint,
+  .workflowStep,
+  .cardDescription,
+  .badge,
+  .subsectionTitle,
+  .speechDetails summary,
+  .btnMini,
+  .summary,
+  .listRow,
+  .log { font-size: 12px; }
+  .chip,
+  .sliderTop label,
+  .toggleName,
+  .modeName,
+  summary { font-size: 12.5px; }
+  .workflowHint,
+  .toggleDetail,
+  .modeDetail,
+  .detailsIntro,
+  .hint,
+  .val { font-size: 11.5px; }
+  .summaryMeta,
+  .fieldLabel,
+  .tag { font-size: 11px; }
+  input[type="text"] { font-size: 12px; }
+  .btn { min-height: 34px; }
+  .toggle { min-height: 44px; }
+
   [hidden] { display: none !important; }
   ::-webkit-scrollbar { width: 7px; }
   ::-webkit-scrollbar-track { background: transparent; }
@@ -596,11 +663,6 @@
   @media (min-width: 660px) {
     main { padding-left: 16px; padding-right: 16px; }
     .settingsGrid {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-      gap: 18px;
-    }
-    .advancedGrid {
       display: grid;
       grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
       gap: 18px;
@@ -628,7 +690,6 @@
         </svg>
         Smart cut
       </span>
-      <span class="more" aria-hidden="true">•••</span>
     </div>
 
     <div class="workflow" aria-label="Editing workflow">
@@ -644,6 +705,12 @@
     </div>
 
     <button id="analyzeBtn" class="btn">Analyze selected clips</button>
+    <button id="cancelBtn" class="btnMini" hidden>Cancel transcription</button>
+
+    <div id="notice" class="notice" hidden>
+      <span id="noticeText"></span>
+      <button id="noticeBtn" class="btnMini" hidden></button>
+    </div>
 
     <section class="card" id="results" hidden>
       <div class="cardHead">
@@ -651,10 +718,20 @@
           <span class="cardTitle">First cut ready</span>
           <span class="cardDescription">Toggle a range to keep it.</span>
         </span>
-        <span class="badge">Review</span>
+        <span class="headActions">
+          <button id="allBtn" class="btnMini" title="Enable every detected cut">All</button>
+          <button id="noneBtn" class="btnMini" title="Disable every detected cut">None</button>
+        </span>
+      </div>
+      <div id="staleBar" class="staleBar" hidden>
+        <span>Detection settings changed since this analysis.</span>
+        <button id="reanalyzeBtn" class="btnMini">Re-analyze</button>
       </div>
       <div id="summary" class="summary"></div>
-      <canvas id="wave" class="wave" title="Click a cut to keep or remove it"></canvas>
+      <div class="waveWrap">
+        <canvas id="wave" class="wave"></canvas>
+        <div id="waveTip" class="waveTip" hidden></div>
+      </div>
       <div id="list" class="list"></div>
       <button id="cutBtn" class="btn accent">Remove silences</button>
       <div id="resultsHint" class="hint"></div>
@@ -698,7 +775,33 @@
       </label>
     </section>
 
-    <details class="refine">
+    <section class="card speechTools">
+      <div class="cardHead">
+        <span>
+          <span class="cardTitle">Speech cleanup</span>
+          <span class="cardDescription">Optional — remove unwanted words in the next analysis.</span>
+        </span>
+      </div>
+      <label class="toggle">
+        <span class="toggleCopy"><span class="toggleName">Remove filler words</span><span class="toggleDetail">Cut “um”, “uh”, … beside the silences</span></span>
+        <input type="checkbox" id="fillersOn">
+      </label>
+      <label class="toggle">
+        <span class="toggleCopy"><span class="toggleName">Mute profanity</span><span class="toggleDetail">Silence swear words, keep the timing</span></span>
+        <input type="checkbox" id="profanityOn">
+      </label>
+      <details class="speechDetails">
+        <summary><span>Edit word lists</span></summary>
+        <div class="detailsBody">
+          <label class="fieldLabel" for="fillerWords">Filler words to cut</label>
+          <input id="fillerWords" type="text" spellcheck="false" title="Comma-separated list of words to remove">
+          <label class="fieldLabel" for="profanityWords">Words to mute</label>
+          <input id="profanityWords" type="text" spellcheck="false" title="Comma-separated list of words to mute (Whisper sometimes censors — add variants like f***)">
+        </div>
+      </details>
+    </section>
+
+    <details class="refine" id="refineDetails">
       <summary><span>Refine detection</span><span class="summaryMeta">Timing &amp; sensitivity</span></summary>
       <div class="detailsBody">
         <p class="detailsIntro">The pacing preset sets these for you. Adjust only when the first cut needs correction.</p>
@@ -742,52 +845,49 @@
           <input type="checkbox" id="crossfadeOn">
         </label>
         <label class="toggle">
-          <span class="toggleCopy"><span class="toggleName">Alternate punch-in</span><span class="toggleDetail">Hide jump cuts with subtle zooms</span></span>
+          <span class="toggleCopy"><span class="toggleName">Alternate punch-in</span><span class="toggleDetail">Relative to each clip’s scale · removed gaps only</span></span>
           <input type="checkbox" id="zoomOn">
         </label>
         <div class="slider sub" id="zoomScaleRow">
-          <div class="sliderTop"><label for="zoomScale">Zoom scale</label><span class="val" id="zoomScaleVal"></span></div>
+          <div class="sliderTop"><label for="zoomScale">Punch-in amount</label><span class="val" id="zoomScaleVal"></span></div>
           <input type="range" id="zoomScale" min="102" max="140" step="1">
         </div>
       </div>
     </section>
 
-    <div class="advancedGrid">
-      <details class="featureDisclosure">
-        <summary>
-          <span class="disclosureLead">
-            <span class="disclosureTitle">Filler-word removal</span>
-            <span class="disclosureDetail">Whisper-powered · optional</span>
-          </span>
-          <span class="summaryAction" aria-hidden="true"></span>
-        </summary>
-        <div class="detailsBody">
-          <p class="detailsIntro">Review “um”, “uh”, and other filler words beside silence cuts.</p>
-          <label class="toggle">
-            <span class="toggleCopy"><span class="toggleName">Remove filler words</span><span class="toggleDetail">Transcription stays on this Mac</span></span>
-            <input type="checkbox" id="fillersOn">
-          </label>
-          <label class="fieldLabel" for="fillerWords">Words to detect</label>
-          <input id="fillerWords" type="text" spellcheck="false" title="Comma-separated list of words to remove">
-          <label class="fieldLabel" for="whisperPath">Whisper executable</label>
-          <input id="whisperPath" type="text" placeholder="Auto-detect (brew install whisper-cpp)" spellcheck="false">
-          <div class="inlineStatus">
-            <div id="whisperStatus" class="hint">Looking for Whisper…</div>
-            <button id="modelBtn" class="btnMini" hidden>Download model</button>
-          </div>
-        </div>
-      </details>
+    <section class="card">
+      <div class="cardHead">
+        <span>
+          <span class="cardTitle">Captions</span>
+          <span class="cardDescription">Export subtitles from the finished sequence.</span>
+        </span>
+      </div>
+      <button id="captionsBtn" class="btn">Export captions (.srt)</button>
+      <div id="captionsStatus" class="hint">Run this after cutting, on the finished sequence.</div>
+    </section>
 
-      <details>
-        <summary><span>Engine setup</span><span class="summaryMeta">Local processing</span></summary>
-        <div class="detailsBody">
-          <p class="detailsIntro">FFmpeg analyzes the audio locally. Nothing is uploaded.</p>
-          <label class="fieldLabel" for="ffmpegPath">FFmpeg executable</label>
-          <input id="ffmpegPath" type="text" placeholder="Auto-detect (brew install ffmpeg)" spellcheck="false">
-          <div id="ffmpegStatus" class="hint">Looking for ffmpeg…</div>
+    <details id="whisperDetails">
+      <summary><span>Transcription setup</span><span class="summaryMeta">For speech cleanup &amp; captions</span></summary>
+      <div class="detailsBody">
+        <p class="detailsIntro">Whisper transcribes locally on this Mac — nothing is uploaded.</p>
+        <label class="fieldLabel" for="whisperPath">Whisper executable</label>
+        <input id="whisperPath" type="text" placeholder="Auto-detect (brew install whisper-cpp)" spellcheck="false">
+        <div class="inlineStatus">
+          <div id="whisperStatus" class="hint">Looking for Whisper…</div>
+          <button id="modelBtn" class="btnMini" hidden>Download model</button>
         </div>
-      </details>
-    </div>
+      </div>
+    </details>
+
+    <details id="engineDetails">
+      <summary><span>Engine setup</span><span class="summaryMeta">Local processing</span></summary>
+      <div class="detailsBody">
+        <p class="detailsIntro">FFmpeg analyzes the audio locally. Nothing is uploaded.</p>
+        <label class="fieldLabel" for="ffmpegPath">FFmpeg executable</label>
+        <input id="ffmpegPath" type="text" placeholder="Auto-detect (brew install ffmpeg)" spellcheck="false">
+        <div id="ffmpegStatus" class="hint">Looking for ffmpeg…</div>
+      </div>
+    </details>
   </main>
 
   <footer><div id="log" class="log">Ready — select clips to begin.</div></footer>
